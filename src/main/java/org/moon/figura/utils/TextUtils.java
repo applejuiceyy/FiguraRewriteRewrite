@@ -57,7 +57,7 @@ public class TextUtils {
     }
 
     public static Component removeClickableObjects(Component text) {
-        return removeClickableObjects(text, p -> false);
+        return removeClickableObjects(text, p -> true);
     }
     public static Component removeClickableObjects(Component text, Predicate<ClickEvent> pred) {
         MutableComponent ret = Component.empty();
