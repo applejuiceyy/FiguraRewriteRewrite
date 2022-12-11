@@ -115,6 +115,7 @@ public enum Config {
     POPUP_BUTTON("key.keyboard.r"),
     RELOAD_BUTTON("key.keyboard.unknown"),
     PANIC_BUTTON("key.keyboard.unknown"),
+    WARDROBE_BUTTON("key.keyboard.unknown"),
     BUTTON_LOCATION(0, 5),
     UPDATE_CHANNEL(1, 3) {
         @Override
@@ -136,6 +137,7 @@ public enum Config {
             TrustManager.saveToDisk();
         }
     },
+    CHAT_EMOJIS(false),
     EASTER_EGGS(true),
 
     Dev {{this.name = this.name.copy().withStyle(ChatFormatting.RED);}},
@@ -146,6 +148,7 @@ public enum Config {
                 FiguraText.of(tooltip + ".cubes").setStyle(ColorUtils.Colors.FRAN_PINK.style),
                 FiguraText.of(tooltip + ".groups").setStyle(ColorUtils.Colors.MAYA_BLUE.style));
     }},
+    FIRST_PERSON_MATRICES(true),
     LOG_OTHERS(false),
     LOG_PINGS(0, 3),
     SYNC_PINGS(false) {{

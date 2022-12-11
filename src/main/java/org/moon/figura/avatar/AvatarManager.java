@@ -100,8 +100,7 @@ public class AvatarManager {
         if (panic || Minecraft.getInstance().level == null)
             return null;
 
-        if (!FETCHED_USERS.contains(player))
-            fetchBackend(player);
+        fetchBackend(player);
 
         UserData user = LOADED_USERS.get(player);
         return user == null ? null : user.getMainAvatar();
@@ -154,7 +153,6 @@ public class AvatarManager {
 
         NetworkStuff.clear(id);
         NetworkStuff.unsubscribe(id);
-
         FiguraMod.debug("Cleared avatars of " + id);
     }
 
@@ -205,9 +203,13 @@ public class AvatarManager {
 
     //get avatar from the backend
     private static void fetchBackend(UUID id) {
-        UserData user = LOADED_USERS.computeIfAbsent(id, UserData::new);
+        if (FETCHED_USERS.contains(id))
+            return;
 
         FETCHED_USERS.add(id);
+
+        UserData user = LOADED_USERS.computeIfAbsent(id, UserData::new);
+
         FiguraMod.debug("Getting userdata for " + id);
         NetworkStuff.getUser(user);
     }
