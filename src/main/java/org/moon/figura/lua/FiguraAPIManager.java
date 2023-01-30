@@ -9,6 +9,7 @@ import org.moon.figura.lua.api.entity.EntityAPI;
 import org.moon.figura.lua.api.entity.LivingEntityAPI;
 import org.moon.figura.lua.api.entity.NullEntity;
 import org.moon.figura.lua.api.entity.PlayerAPI;
+import org.moon.figura.lua.api.event.DelayedResponse;
 import org.moon.figura.lua.api.event.EventsAPI;
 import org.moon.figura.lua.api.event.LuaEvent;
 import org.moon.figura.lua.api.keybind.FiguraKeybind;
@@ -79,6 +80,7 @@ public class FiguraAPIManager {
 
         add(EventsAPI.class);
         add(LuaEvent.class);
+        add(DelayedResponse.class);
 
         add(FiguraModelPart.class);
         add(RenderTask.class);

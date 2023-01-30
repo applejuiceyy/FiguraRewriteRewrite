@@ -39,6 +39,7 @@ import org.moon.figura.ducks.CommandSuggestionsAccessor;
 import org.moon.figura.lua.FiguraLuaPrinter;
 import org.moon.figura.lua.FiguraLuaRuntime;
 import org.moon.figura.lua.api.entity.EntityAPI;
+import org.moon.figura.lua.api.event.DelayedResponse;
 import org.moon.figura.lua.api.event.LuaEvent;
 import org.moon.figura.lua.api.particle.ParticleAPI;
 import org.moon.figura.lua.api.ping.PingArg;
@@ -68,6 +69,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Consumer;
@@ -414,11 +416,12 @@ public class Avatar {
     }
 
     @Nullable
-    public CommandSuggestionsAccessor.SuggestionBehaviour chatAutocompleteEvent(String input, int cursor) {
+    public CompletableFuture<CommandSuggestionsAccessor.SuggestionBehaviour> chatAutocompleteEvent(String input, int cursor) {
         if (loaded) {
             LuaEvent ev = luaRuntime.events.CHAT_AUTOCOMPLETE;
             if (ev.__len() > 0) {
-                Varargs execute = run(ev, tick, input, cursor + 1);
+                DelayedResponse response = new DelayedResponse();
+                Varargs execute = run(ev, tick, input, cursor + 1, response);
 
                 if (!execute.arg1().isboolean()) {
                     return null;
@@ -427,94 +430,29 @@ public class Avatar {
                 try {
                     LuaValue verifying;
 
-                    if (!(verifying = execute.arg(2)).istable()) {
-                        throw new LuaError("Second return value from autocomplete event must be a Table");
+                    if ((verifying = execute.arg(2)).isuserdata() && verifying.checkuserdata() == response) {
+                        CompletableFuture<CommandSuggestionsAccessor.SuggestionBehaviour> handled = response.handle((r, u) -> {
+                            try {
+                                return CommandSuggestionsAccessor.SuggestionBehaviour.parse(r, input);
+                            }
+                            catch (Exception | StackOverflowError e) {
+                                if (luaRuntime != null)
+                                    luaRuntime.error(e);
+                                throw e;
+                            }
+                        });
+
+                        handled.exceptionally(exc -> {
+                            if (exc instanceof CancellationException) {
+                                response.cancel(true);
+                            }
+                            return null;
+                        });
+
+                        return handled;
                     }
-                    LuaTable table = verifying.checktable();
-
-                    if (!(verifying = table.rawget("result")).isstring()) {
-                        throw new LuaError("Table from autocomplete event expected a String in field \"result\"");
-                    }
-
-                    String s = verifying.checkjstring();
-                    switch (s) {
-                        case "suggest" -> {
-                            if (!(verifying = table.rawget("suggestions")).istable()) {
-                                throw new LuaError("Table from autocomplete event expected a Table in field \"suggestions\"");
-                            }
-                            LuaTable suggestions = verifying.checktable();
-
-                            if (!(verifying = table.rawget("position")).isint()) {
-                                throw new LuaError("Table from autocomplete event expected an Integer in field \"position\"");
-                            }
-                            int position = verifying.checkint();
-
-                            if (position < 1) {
-                                throw new LuaError("Provided position in autocomplete event must not be smaller than 1");
-                            }
-                            if (position > input.length() + 1) {
-                                throw new LuaError("Provided position in autocomplete event cannot surpass length of input String");
-                            }
-
-                            SuggestionsBuilder builder = new SuggestionsBuilder(input, position - 1);
-                            for (int i = 1; suggestions.get(i) != LuaValue.NIL; i++) {
-                                verifying = suggestions.get(i);
-                                String tooltip, value;
-
-                                if (verifying.isstring()) {
-                                    value = verifying.tojstring();
-                                    tooltip = null;
-
-                                } else if (verifying.istable()) {
-                                    LuaTable suggestion = verifying.checktable();
-
-                                    if (!(verifying = suggestion.rawget("name")).isstring()) {
-                                        throw new LuaError("Tables inside array \"suggestions\" from the Table from the autocomplete expected a String in field \"name\"");
-                                    }
-
-                                    value = verifying.checkjstring();
-                                    verifying = suggestion.rawget("tooltip");
-                                    if (verifying.isnil()) {
-                                        tooltip = null;
-                                    }
-                                    else if (verifying.isstring()) {
-                                        tooltip = verifying.checkjstring();
-                                    } else {
-                                        throw new LuaError("Tables inside array \"suggestions\" from the Table from the autocomplete expected a String or nil in field \"tooltip\"");
-                                    }
-                                }
-                                else {
-                                    throw new LuaError("Table \"suggestions\" from the Table from the autocomplete event was expected to be an array of Strings or Tables, but caught %s in position %d"
-                                            .formatted(verifying.typename(), i)
-                                    );
-                                }
-
-                                if (tooltip == null) {
-                                    builder.suggest(value);
-                                }
-                                else {
-                                    builder.suggest(value, new LiteralMessage(tooltip));
-                                }
-                            }
-                            return new CommandSuggestionsAccessor.AcceptBehaviour(builder.build());
-                        }
-                        case "usage" -> {
-                            if (!(verifying = table.rawget("usage")).isstring()) {
-                                throw new LuaError("Table from autocomplete event expected a String in field \"usage\"");
-                            }
-                            String usage = verifying.tojstring();
-                            if (!(verifying = table.rawget("position")).isint()) {
-                                throw new LuaError("Table from autocomplete event expected an Integer in field \"position\"");
-                            }
-                            return new CommandSuggestionsAccessor.HintBehaviour(usage, verifying.checkint() - 1);
-                        }
-                        case "error" -> {
-                            if (!(verifying = table.rawget("message")).isstring()) {
-                                throw new LuaError("Table from autocomplete event expected a String in field \"message\"");
-                            }
-                            return new CommandSuggestionsAccessor.RejectBehaviour(verifying.tojstring());
-                        }
-                        default -> throw new LuaError("The field \"result\" from the Table from autocomplete event must be of either \"suggest\", \"usage\" or \"error\"; But received \"%s\" instead".formatted(s));
+                    else {
+                        return CompletableFuture.completedFuture(CommandSuggestionsAccessor.SuggestionBehaviour.parse(verifying, input));
                     }
                 }
                 catch (Exception | StackOverflowError e) {

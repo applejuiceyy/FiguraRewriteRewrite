@@ -1,5 +1,6 @@
 package org.moon.figura.mixin.gui.suggestion;
 
+import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.brigadier.StringReader;
 import com.mojang.brigadier.suggestion.Suggestions;
 import net.minecraft.client.Minecraft;
@@ -29,17 +30,20 @@ import org.spongepowered.asm.mixin.injection.ModifyArg;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.LocalCapture;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 @Mixin(CommandSuggestions.class)
-public class CommandSuggestionsMixin implements CommandSuggestionsAccessor {
+public abstract class CommandSuggestionsMixin implements CommandSuggestionsAccessor {
     @Unique
     boolean shouldShowBadges = false;
     @Unique
     boolean useFiguraSuggester = false;
     @Unique
     int cachedEnlargement = -1;
+    @Unique
+    CompletableFuture<SuggestionBehaviour> currentBehaviour;
 
     @Shadow
     private CompletableFuture<Suggestions> pendingSuggestions;
@@ -65,6 +69,8 @@ public class CommandSuggestionsMixin implements CommandSuggestionsAccessor {
     @Shadow @Final
     Font font;
 
+    @Shadow public abstract void updateCommandInfo();
+
     @Override
     public void figura$setUseFiguraSuggester(boolean use) {
         useFiguraSuggester = use;
@@ -87,6 +93,18 @@ public class CommandSuggestionsMixin implements CommandSuggestionsAccessor {
         return cachedEnlargement;
     }
 
+    @Unique
+    private Component getLoadingText() {
+        MutableComponent load = Component.empty();
+
+        MutableComponent badge = Component.literal(Integer.toHexString(Math.abs(FiguraMod.ticks) % 16));
+        badge.setStyle(Style.EMPTY.withColor(ColorUtils.rgbToInt(ColorUtils.Colors.DEFAULT.vec)).withFont(Badges.FONT));
+        load.append(badge);
+        load.append(" This avatar is loading suggestions");
+
+        return load;
+    }
+
     @SuppressWarnings("InvalidInjectorMethodSignature")  // the plugin keeps telling that it's wrong for some reason
     @Inject(
             method = "updateCommandInfo",
@@ -99,47 +117,65 @@ public class CommandSuggestionsMixin implements CommandSuggestionsAccessor {
             locals = LocalCapture.CAPTURE_FAILHARD
     )
     public void useFigura(CallbackInfo ci, String string, StringReader stringReader, boolean bl2, int i) {
-        if (useFiguraSuggester && !keepSuggestions) {
-            shouldShowBadges = false;
+        if (!useFiguraSuggester || keepSuggestions) {
+            return;
+        }
 
-            if (Config.CHAT_AUTOCOMPLETE.asInt() == 2) {
-                return;
-            }
+        shouldShowBadges = false;
 
-            Avatar avatar = AvatarManager.getAvatarForPlayer(FiguraMod.getLocalPlayerUUID());
-            if (avatar == null || avatar.luaRuntime == null)
-                return;
+        if (Config.CHAT_AUTOCOMPLETE.asInt() == 2) {
+            return;
+        }
 
-            SuggestionBehaviour behaviour = avatar.chatAutocompleteEvent(string, i);
-            if (behaviour == null) {
-                return;
-            }
+        Avatar avatar = AvatarManager.getAvatarForPlayer(FiguraMod.getLocalPlayerUUID());
+        if (avatar == null || avatar.luaRuntime == null)
+            return;
+
+        if (currentBehaviour != null) {
+            currentBehaviour.cancel(true);
+        }
+
+        currentBehaviour = avatar.chatAutocompleteEvent(string, i);
+
+        if (currentBehaviour == null) {
+            return;
+        }
+
+        if (!currentBehaviour.isDone()) {
+            commandUsagePosition = 0;
+            commandUsageWidth = font.width(getLoadingText());
+        }
+
+
+        pendingSuggestions = currentBehaviour.thenApply(behave -> {
             commandUsageWidth = screen.width;
             commandUsagePosition = 0;
+            commandUsage.clear();
 
             shouldShowBadges = Config.CHAT_AUTOCOMPLETE.asInt() == 1;
 
-            if (behaviour instanceof AcceptBehaviour accepting) {
-                Suggestions s = accepting.suggest();
-                pendingSuggestions = CompletableFuture.completedFuture(s);
+            Suggestions suggestions;
 
-                if (s.isEmpty()) {
+            if (behave instanceof AcceptBehaviour accepting) {
+                suggestions = accepting.suggest();
+
+                if (suggestions.isEmpty()) {
                     commandUsage.add(FormattedCharSequence.forward("This avatar did not provide any suggestion", Style.EMPTY));
                 }
             }
             else {
                 String usage;
-                pendingSuggestions = Suggestions.empty();
-                if (behaviour instanceof HintBehaviour hint) {
+                suggestions = Suggestions.merge("", Collections.emptyList());
+                if (behave instanceof HintBehaviour hint) {
                     usage = hint.hint();
                     commandUsagePosition = Mth.clamp(input.getScreenX(hint.pos()), 0, this.input.getScreenX(0) + this.input.getInnerWidth() - i);
                     commandUsageWidth = font.width(usage);
                 }
-                else if (behaviour instanceof RejectBehaviour reject) {
+                else if (behave instanceof RejectBehaviour reject) {
                     usage = reject.err();
                 }
                 else {
-                    throw new RuntimeException("Unexpected " + behaviour.getClass().getName());
+                    throw new RuntimeException("Unexpected " + behave.getClass().getName());
                 }
 
                 if (shouldShowBadges) {
@@ -161,11 +197,27 @@ public class CommandSuggestionsMixin implements CommandSuggestionsAccessor {
                 commandUsageWidth = 0;
             }
 
+            return suggestions;
+        });
+
+        pendingSuggestions.thenRun(() -> {
             if (allowSuggestions && Minecraft.getInstance().options.autoSuggestions().get()) {
                 ((CommandSuggestions) (Object) this).showSuggestions(false);
             }
-            ci.cancel();
-        }
+        });
+
+        currentBehaviour.exceptionally(exc -> {
+            useFiguraSuggester = false;
+            try {
+                updateCommandInfo();
+            }
+            finally {
+                useFiguraSuggester = true;
+            }
+            return null;
+        });
+
+        ci.cancel();
     }
 
     @ModifyArg(
@@ -181,5 +233,18 @@ public class CommandSuggestionsMixin implements CommandSuggestionsAccessor {
             return v;
         }
         return v + getEnlargement();
+    }
+
+    @Inject(
+            method = "renderUsage",
+            at = @At(
+                    value = "HEAD"
+            )
+    )
+    public void animateSpinner(PoseStack matrices, CallbackInfo ci) {
+        if (currentBehaviour != null && !currentBehaviour.isDone()) {
+            commandUsage.clear();
+            commandUsage.add(getLoadingText().getVisualOrderText());
+        }
     }
 }
